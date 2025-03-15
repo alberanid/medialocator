@@ -1,0 +1,11 @@
+medialocator
+*.exe
+*.log
+*.tmp
+*.out
+*~
+*.swp
+*.swo
+*.bak
+vendor/
+bin/
