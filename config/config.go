@@ -3,6 +3,7 @@ package config
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -51,6 +52,10 @@ func ParseArgs() *Config {
 	}
 
 	c.Tags = splitAndTrim(tags)
+
+	if c.Verbose {
+		slog.SetLogLoggerLevel(slog.LevelDebug)
+	}
 
 	return &c
 }
