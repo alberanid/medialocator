@@ -13,6 +13,25 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+// recursively get metadata_items.id selecting rows from metadata_items that have a parent_id
+func getChildren(db *sql.DB, parentId int) []int {
+	items := []int{}
+	rows, err := db.Query("SELECT id FROM metadata_items WHERE parent_id=?", parentId)
+	if err != nil {
+		slog.Error(fmt.Sprintf("getChildren error getting children of %d: %s", parentId, err))
+		return items
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int
+		rows.Scan(&id)
+		items = append(items, id)
+		children := getChildren(db, id)
+		items = append(items, children...)
+	}
+	return items
+}
+
 // tag2items returns a list of media_items.id for a given tag
 func tag2items(db *sql.DB, tag string) []int {
 	items := []int{}
@@ -27,7 +46,11 @@ func tag2items(db *sql.DB, tag string) []int {
 	var tagId int
 	_found := false
 	if rows.Next() {
-		rows.Scan(&tagId)
+		err = rows.Scan(&tagId)
+		if err != nil {
+			slog.Error(fmt.Sprintf("tag2items error scanning tag %s: %s", tag, err))
+			return items
+		}
 		_found = true
 	}
 	if !_found {
@@ -41,10 +64,27 @@ func tag2items(db *sql.DB, tag string) []int {
 		slog.Error(fmt.Sprintf("tag2items error getting taggings for tag %s: %s", tag, err))
 		return items
 	}
+
+	metadataItemIds := []int{}
 	for rows.Next() {
 		var metadataItemId int
-		rows.Scan(&metadataItemId)
+		err = rows.Scan(&metadataItemId)
+		if err != nil {
+			slog.Error(fmt.Sprintf("tag2items error scanning taggings for tag %s: %s", tag, err))
+			continue
+		}
+		metadataItemIds = append(metadataItemIds, metadataItemId)
+	}
 
+	// also add entries that came from rows that have a parent_id set to one of
+	// the values seen in taggings.
+	childrenMetadataItemIds := []int{}
+	for _, metadataItemId := range metadataItemIds {
+		childrenMetadataItemIds = append(childrenMetadataItemIds, getChildren(db, metadataItemId)...)
+	}
+	metadataItemIds = append(metadataItemIds, childrenMetadataItemIds...)
+
+	for _, metadataItemId := range metadataItemIds {
 		miRows, err := db.Query("SELECT id FROM media_items WHERE metadata_item_id=?", metadataItemId)
 		if err != nil {
 			slog.Error(fmt.Sprintf("tag2items error getting media_items.id for tag %s: %s", tag, err))
@@ -52,7 +92,11 @@ func tag2items(db *sql.DB, tag string) []int {
 		}
 		for miRows.Next() {
 			var miRowID int
-			miRows.Scan(&miRowID)
+			err = miRows.Scan(&miRowID)
+			if err != nil {
+				slog.Error(fmt.Sprintf("tag2items error scanning media_items.id for tag %s: %s", tag, err))
+				continue
+			}
 			items = append(items, miRowID)
 		}
 	}
@@ -70,7 +114,11 @@ func media2parts(db *sql.DB, mediaId int) []string {
 	}
 	for rows.Next() {
 		var part string
-		rows.Scan(&part)
+		err = rows.Scan(&part)
+		if err != nil {
+			slog.Error(fmt.Sprintf("media2parts error scanning media_parts for media %d: %s", mediaId, err))
+			continue
+		}
 		parts = append(parts, part)
 	}
 	slog.Debug(fmt.Sprintf("media %d parts: %s", mediaId, strings.Join(parts, ", ")))
@@ -95,13 +143,13 @@ func main() {
 	cfg := config.ParseArgs()
 
 	if _, err := os.Stat(cfg.PlexDb); os.IsNotExist(err) {
-		slog.Error(fmt.Sprintf("database %s does not exist\n", fmt.Sprintf("%s?mode=ro", cfg.PlexDb)))
+		slog.Error(fmt.Sprintf("database %s does not exist", cfg.PlexDb))
 		os.Exit(1)
 	}
 
-	db, err := sql.Open("sqlite3", cfg.PlexDb)
+	db, err := sql.Open("sqlite3", fmt.Sprintf("%s?mode=ro", cfg.PlexDb))
 	if err != nil {
-		panic(err)
+		slog.Error(fmt.Sprintf("error opening database %s: %s", cfg.PlexDb, err))
 	}
 	defer db.Close()
 
