@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/alberanid/medialocator/config"
 	_ "github.com/mattn/go-sqlite3"
 )
 
+// tag2items returns a list of media_items.id for a given tag
 func tag2items(db *sql.DB, tag string) []int {
 	items := []int{}
 	// get tag id from tags table
@@ -58,6 +60,7 @@ func tag2items(db *sql.DB, tag string) []int {
 	return items
 }
 
+// media2parts returns a list of media_parts.file for a given media_item.id
 func media2parts(db *sql.DB, mediaId int) []string {
 	parts := []string{}
 	rows, err := db.Query("SELECT file FROM media_parts WHERE media_item_id=?", mediaId)
@@ -74,29 +77,44 @@ func media2parts(db *sql.DB, mediaId int) []string {
 	return parts
 }
 
+// deduplicate a list of strings
+func dedupStrings(s []string) []string {
+	m := make(map[string]bool)
+	for _, item := range s {
+		m[item] = true
+	}
+	result := []string{}
+	for item := range m {
+		result = append(result, item)
+	}
+	slices.Sort(result)
+	return result
+}
+
 func main() {
 	cfg := config.ParseArgs()
 
 	if _, err := os.Stat(cfg.PlexDb); os.IsNotExist(err) {
-		fmt.Printf("File %s does not exist\n", cfg.PlexDb)
+		slog.Error(fmt.Sprintf("database %s does not exist\n", fmt.Sprintf("%s?mode=ro", cfg.PlexDb)))
 		os.Exit(1)
 	}
 
-	// Open the database
 	db, err := sql.Open("sqlite3", cfg.PlexDb)
 	if err != nil {
 		panic(err)
 	}
 	defer db.Close()
 
+	parts := []string{}
 	for _, tag := range cfg.Tags {
 		items := tag2items(db, tag)
 		for _, item := range items {
-			parts := media2parts(db, item)
-			for _, part := range parts {
-				fmt.Printf("%s\n", part)
-			}
+			mediaParts := media2parts(db, item)
+			parts = append(parts, mediaParts...)
 		}
 	}
-
+	parts = dedupStrings(parts)
+	for _, part := range parts {
+		fmt.Printf("%s\n", part)
+	}
 }
