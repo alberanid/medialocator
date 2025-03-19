@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path"
 	"slices"
 	"strings"
 
@@ -163,6 +164,12 @@ func main() {
 	}
 	parts = dedupStrings(parts)
 	for _, part := range parts {
+		if cfg.StripPrefix != "" {
+			part = strings.TrimPrefix(part, cfg.StripPrefix)
+		}
+		if cfg.AddPrefix != "" {
+			part = path.Join(cfg.AddPrefix, part)
+		}
 		fmt.Printf("%s\n", part)
 	}
 }
