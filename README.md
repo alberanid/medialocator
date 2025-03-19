@@ -1,0 +1,27 @@
+# medialocator
+
+Medialocator will print the movies and TV series in a [Plex](https://www.plex.tv/) database with the given labels.
+
+## Build
+
+Just run `go build .`
+
+## Run
+
+The most useful call is something like this:
+
+```sh
+./medialocator \
+  -tags preserve,classic \
+  -plex-db /path/to/com.plexapp.plugins.library.db
+```
+
+Where **preserve** and **classic** are two comma-separated tags to search for.
+
+## Copyright
+
+Davide Alberani <da@mimante.net> 2025.
+
+Released under the Apache 2.0 license.
+
+The author is in no way associated with Plex Inc.
