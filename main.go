@@ -163,13 +163,28 @@ func main() {
 		}
 	}
 	parts = dedupStrings(parts)
-	for _, part := range parts {
+	for idx, part := range parts {
 		if cfg.StripPrefix != "" {
 			part = strings.TrimPrefix(part, cfg.StripPrefix)
 		}
 		if cfg.AddPrefix != "" {
 			part = path.Join(cfg.AddPrefix, part)
 		}
-		fmt.Printf("%s\n", part)
+		parts[idx] = part
+	}
+
+	outFile := os.Stdout
+	if cfg.OutputFile != "" {
+		f, err := os.OpenFile(cfg.OutputFile, os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			slog.Error(fmt.Sprintf("error opening output file %s: %s", cfg.OutputFile, err))
+			os.Exit(2)
+		}
+		defer f.Close()
+		outFile = f
+	}
+
+	for _, part := range parts {
+		fmt.Fprintf(outFile, "%s\n", part)
 	}
 }

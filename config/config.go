@@ -18,6 +18,7 @@ type Config struct {
 	PlexDb      string
 	AddPrefix   string
 	StripPrefix string
+	OutputFile  string
 	Verbose     bool
 }
 
@@ -43,6 +44,7 @@ func ParseArgs() *Config {
 	flag.StringVar(&c.PlexDb, "plex-db", DEFAULT_PLEX_DB, "Plex database file")
 	flag.StringVar(&c.AddPrefix, "add-prefix", "", "Add this prefix to the file paths")
 	flag.StringVar(&c.StripPrefix, "strip-prefix", "", "Remove this prefix from the file paths")
+	flag.StringVar(&c.OutputFile, "output-file", "", "Write output to this file")
 	flag.BoolVar(&c.Verbose, "verbose", false, "be more verbose")
 	getVer := flag.Bool("version", false, "print version and quit")
 
