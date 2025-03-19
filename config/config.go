@@ -10,7 +10,7 @@ import (
 	"github.com/alberanid/medialocator/version"
 )
 
-const DEFAULT_PLEX_DB = "com.plexapp.plugins.library.db"
+const DEFAULT_PLEX_DB = "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Plug-in Support/Databases/com.plexapp.plugins.library.db"
 
 // store command line configuration.
 type Config struct {
