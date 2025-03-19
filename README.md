@@ -1,6 +1,6 @@
 # medialocator
 
-Medialocator will print the file location of movies and TV shows in a [Plex](https://www.plex.tv/) database that have the given labels.
+Medialocator will print the file location of movies and TV shows in a [Plex](https://www.plex.tv/) database that have the given labels. This may be useful, for example, to get a list of title to backup.
 
 ## Build
 
