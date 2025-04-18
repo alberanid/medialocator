@@ -126,6 +126,37 @@ func media2parts(db *sql.DB, mediaId int) []string {
 	return parts
 }
 
+// allMediaParts returns a list of all media_parts.file
+func allMediaParts(cfg *config.Config, db *sql.DB) []string {
+	parts := []string{}
+	rows, err := db.Query("SELECT file FROM media_parts")
+	if err != nil {
+		slog.Error(fmt.Sprintf("error querying media_parts: %s", err))
+		os.Exit(3)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var part string
+		if err := rows.Scan(&part); err != nil {
+			slog.Error(fmt.Sprintf("error scanning media_parts: %s", err))
+			continue
+		}
+		if cfg.StripPrefix != "" {
+			part = strings.TrimPrefix(part, cfg.StripPrefix)
+		}
+		if cfg.AddPrefix != "" {
+			part = path.Join(cfg.AddPrefix, part)
+		}
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		parts = append(parts, part)
+	}
+	slog.Debug(fmt.Sprintf("got a total of %d media parts", len(parts)))
+	return parts
+}
+
 // deduplicate a list of strings
 func dedupStrings(s []string) []string {
 	m := make(map[string]bool)
@@ -153,6 +184,16 @@ func main() {
 		slog.Error(fmt.Sprintf("error opening database %s: %s", cfg.PlexDb, err))
 	}
 	defer db.Close()
+
+	// Check if the list-all flag is set and list all media_parts without filtering
+	if cfg.ListAll {
+		parts := allMediaParts(cfg, db)
+		parts = dedupStrings(parts)
+		for _, part := range parts {
+			fmt.Fprintf(os.Stdout, "%s\n", part)
+		}
+		os.Exit(0)
+	}
 
 	parts := []string{}
 	for _, tag := range cfg.Tags {
