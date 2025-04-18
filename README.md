@@ -19,6 +19,8 @@ The most useful call is something like this:
 
 Where **preserve** and **classic** are two comma-separated tags to search for. If `-output-file` is not specified, the list will be printed to standard output.
 
+It's also possible to get the complete list of all media parts with the `-list-all` option.
+
 ## Copyright
 
 Davide Alberani <da@mimante.net> 2025.
