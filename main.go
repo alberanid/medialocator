@@ -157,6 +157,27 @@ func allMediaParts(cfg *config.Config, db *sql.DB) []string {
 	return parts
 }
 
+// itemsNoTags returns a list of media_items.id with no associated tags
+func itemsNoTags(db *sql.DB) []int {
+	items := []int{}
+	rows, err := db.Query("SELECT id FROM media_items WHERE metadata_item_id NOT IN (SELECT metadata_item_id FROM taggings)")
+	if err != nil {
+		slog.Error(fmt.Sprintf("itemsNoTags error querying media_items: %s", err))
+		return items
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			slog.Error(fmt.Sprintf("itemsNoTags error scanning media_items.id: %s", err))
+			continue
+		}
+		items = append(items, id)
+	}
+	slog.Debug(fmt.Sprintf("items with no tags: %d", len(items)))
+	return items
+}
+
 // deduplicate a list of strings
 func dedupStrings(s []string) []string {
 	m := make(map[string]bool)
@@ -185,24 +206,25 @@ func main() {
 	}
 	defer db.Close()
 
-	// Check if the list-all flag is set and list all media_parts without filtering
-	if cfg.ListAll {
-		parts := allMediaParts(cfg, db)
-		parts = dedupStrings(parts)
-		for _, part := range parts {
-			fmt.Fprintf(os.Stdout, "%s\n", part)
-		}
-		os.Exit(0)
-	}
-
 	parts := []string{}
-	for _, tag := range cfg.Tags {
-		items := tag2items(db, tag)
+	if cfg.ListAll {
+		parts = allMediaParts(cfg, db)
+	} else if cfg.NoTags {
+		items := itemsNoTags(db)
 		for _, item := range items {
 			mediaParts := media2parts(db, item)
 			parts = append(parts, mediaParts...)
 		}
+	} else {
+		for _, tag := range cfg.Tags {
+			items := tag2items(db, tag)
+			for _, item := range items {
+				mediaParts := media2parts(db, item)
+				parts = append(parts, mediaParts...)
+			}
+		}
 	}
+
 	parts = dedupStrings(parts)
 	for idx, part := range parts {
 		if cfg.StripPrefix != "" {

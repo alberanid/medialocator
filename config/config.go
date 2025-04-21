@@ -21,6 +21,7 @@ type Config struct {
 	OutputFile  string
 	Verbose     bool
 	ListAll     bool
+	NoTags      bool
 }
 
 // Split and trim comma-separated values
@@ -48,6 +49,7 @@ func ParseArgs() *Config {
 	flag.StringVar(&c.OutputFile, "output-file", "", "Write output to this file")
 	flag.BoolVar(&c.Verbose, "verbose", false, "be more verbose")
 	flag.BoolVar(&c.ListAll, "list-all", false, "List all media_parts without filtering by tags (includes all libraries)")
+	flag.BoolVar(&c.NoTags, "no-tags", false, "Filter media items with no tags associated")
 	getVer := flag.Bool("version", false, "print version and quit")
 
 	flag.Parse()
@@ -62,12 +64,18 @@ func ParseArgs() *Config {
 	if c.ListAll && len(c.Tags) != 0 {
 		slog.Error("-list-all and -tags are mutually exclusive")
 		os.Exit(1)
-
+	}
+	if c.NoTags && len(c.Tags) != 0 {
+		slog.Error("-no-tags and -tags are mutually exclusive")
+		os.Exit(1)
+	}
+	if c.NoTags && c.ListAll {
+		slog.Error("-no-tags and -list-all are mutually exclusive")
+		os.Exit(1)
 	}
 
 	if c.Verbose {
 		slog.SetLogLoggerLevel(slog.LevelDebug)
 	}
-
 	return &c
 }
