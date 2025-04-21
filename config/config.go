@@ -22,6 +22,7 @@ type Config struct {
 	Verbose     bool
 	ListAll     bool
 	NoTags      bool
+	Libraries   []string
 }
 
 // Split and trim comma-separated values
@@ -42,7 +43,9 @@ func splitAndTrim(s string) []string {
 func ParseArgs() *Config {
 	c := Config{}
 	tags := ""
+	libraries := ""
 	flag.StringVar(&tags, "tags", "", "Filter movies with this comma-separated tags")
+	flag.StringVar(&libraries, "libraries", "", "Filter by comma-separated library names")
 	flag.StringVar(&c.PlexDb, "plex-db", DEFAULT_PLEX_DB, "Plex database file")
 	flag.StringVar(&c.AddPrefix, "add-prefix", "", "Add this prefix to the file paths")
 	flag.StringVar(&c.StripPrefix, "strip-prefix", "", "Remove this prefix from the file paths")
@@ -60,6 +63,7 @@ func ParseArgs() *Config {
 	}
 
 	c.Tags = splitAndTrim(tags)
+	c.Libraries = splitAndTrim(libraries)
 
 	if c.ListAll && len(c.Tags) != 0 {
 		slog.Error("-list-all and -tags are mutually exclusive")
@@ -71,6 +75,10 @@ func ParseArgs() *Config {
 	}
 	if c.NoTags && c.ListAll {
 		slog.Error("-no-tags and -list-all are mutually exclusive")
+		os.Exit(1)
+	}
+	if len(c.Tags) == 0 && !c.NoTags && !c.ListAll {
+		slog.Error("no tags specified, use -tags or -no-tags or -list-all")
 		os.Exit(1)
 	}
 

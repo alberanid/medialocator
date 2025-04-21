@@ -21,6 +21,10 @@ Where **preserve** and **classic** are two comma-separated tags to search for. I
 
 It's also possible to get the complete list of all media parts with the `-list-all` option.
 
+If you want to list all media items that have no associated tag, use the `-no-tags` option.
+
+To filter by one or more library, use the `-libraries Comma,Separated,List,Of,Libraries` argument.
+
 ## Copyright
 
 Davide Alberani <da@mimante.net> 2025.
