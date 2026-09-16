@@ -7,5 +7,6 @@ medialocator
 *.swp
 *.swo
 *.bak
+com.plexapp.plugins.library.db
 vendor/
 bin/
