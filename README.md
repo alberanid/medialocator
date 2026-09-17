@@ -19,6 +19,8 @@ The most useful call is something like this:
 
 Where **preserve** and **classic** are two comma-separated tags to search for. If `-output-file` is not specified, the list will be printed to standard output.
 
+The output file is written to a temporary file and renamed into place, so a failed run never truncates an existing list. It must point to a different file than the Plex database: aliases of the database (same path, symlink or hard link) are rejected.
+
 It's also possible to get the complete list of all media parts with the `-list-all` option.
 
 If you want to list all media items that have no associated tag, use the `-no-tags` option.

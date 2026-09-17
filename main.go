@@ -3,16 +3,94 @@ package main
 // import sqlite3 driver
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/alberanid/medialocator/config"
 	_ "github.com/mattn/go-sqlite3"
 )
+
+// readOnlyDSN builds the SQLite URI used to open the Plex database.
+// The DSN must start with "file:" for the go-sqlite3 driver to keep the query
+// parameters: a bare path is opened with SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE
+// and its parameters are dropped. mode=ro makes SQLite reject writes, and
+// _query_only=true sets PRAGMA query_only as defense in depth.
+func readOnlyDSN(dbPath string) string {
+	u := url.URL{
+		Scheme:   "file",
+		OmitHost: true,
+		Path:     dbPath,
+		RawQuery: "mode=ro&_query_only=true",
+	}
+	return u.String()
+}
+
+// ensureDistinctOutput refuses an output path that resolves to the database
+// being read, including symlink and hard-link aliases, so that a run can never
+// overwrite the source database.
+func ensureDistinctOutput(dbPath, outputPath string) error {
+	dbInfo, err := os.Stat(dbPath)
+	if err != nil {
+		return err
+	}
+	outInfo, err := os.Stat(outputPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if os.SameFile(dbInfo, outInfo) {
+		return errors.New("output file is the same file as the database")
+	}
+	return nil
+}
+
+// writeOutputAtomically writes the lines to a temporary file in the
+// destination directory and renames it over outputPath, so an interrupted or
+// failing run leaves any pre-existing output file untouched.
+func writeOutputAtomically(outputPath string, parts []string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(outputPath), ".medialocator-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		if tmpName != "" {
+			os.Remove(tmpName)
+		}
+	}()
+	// Keep the permissions of an existing output file, since the rename
+	// replaces the inode that carried them.
+	mode := os.FileMode(0644)
+	if info, err := os.Stat(outputPath); err == nil {
+		mode = info.Mode().Perm()
+	}
+	for _, part := range parts {
+		if _, err := fmt.Fprintf(tmp, "%s\n", part); err != nil {
+			tmp.Close()
+			return err
+		}
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, mode); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, outputPath); err != nil {
+		return err
+	}
+	tmpName = ""
+	return nil
+}
 
 // helper to generate SQL IN clause and args for librarySectionIDs
 func librarySectionFilter(field string, ids []int) (string, []interface{}) {
@@ -276,7 +354,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	db, err := sql.Open("sqlite3", fmt.Sprintf("%s?mode=ro", cfg.PlexDb))
+	if cfg.OutputFile != "" {
+		if err := ensureDistinctOutput(cfg.PlexDb, cfg.OutputFile); err != nil {
+			slog.Error(fmt.Sprintf("refusing output file %s: %s", cfg.OutputFile, err))
+			os.Exit(2)
+		}
+	}
+
+	db, err := sql.Open("sqlite3", readOnlyDSN(cfg.PlexDb))
 	if err != nil {
 		slog.Error(fmt.Sprintf("error opening database %s: %s", cfg.PlexDb, err))
 	}
@@ -326,18 +411,15 @@ func main() {
 		parts[idx] = part
 	}
 
-	outFile := os.Stdout
-	if cfg.OutputFile != "" {
-		f, err := os.OpenFile(cfg.OutputFile, os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			slog.Error(fmt.Sprintf("error opening output file %s: %s", cfg.OutputFile, err))
-			os.Exit(2)
+	if cfg.OutputFile == "" {
+		for _, part := range parts {
+			fmt.Fprintf(os.Stdout, "%s\n", part)
 		}
-		defer f.Close()
-		outFile = f
+		return
 	}
 
-	for _, part := range parts {
-		fmt.Fprintf(outFile, "%s\n", part)
+	if err := writeOutputAtomically(cfg.OutputFile, parts); err != nil {
+		slog.Error(fmt.Sprintf("error writing output file %s: %s", cfg.OutputFile, err))
+		os.Exit(2)
 	}
 }
