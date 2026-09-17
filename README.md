@@ -27,6 +27,8 @@ If you want to list all media items that have no associated tag, use the `-no-ta
 
 To filter by one or more library, use the `-libraries Comma,Separated,List,Of,Libraries` argument.
 
+Both `-tags` and `-no-tags` work on the metadata hierarchy: labeling a show, season or movie also selects its children, and an item counts as tagged when any of its ancestors carries a tag of any category. `-tags` only matches Plex labels (tag type 11); other categories such as genres, countries or collections can share the same text and are ignored.
+
 ## Copyright
 
 Davide Alberani <da@mimante.net> 2025.

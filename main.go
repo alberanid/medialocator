@@ -120,25 +120,6 @@ func stringInClause(field string, values []string) (string, []interface{}) {
 	return clause, args
 }
 
-// recursively get metadata_items.id selecting rows from metadata_items that have a parent_id
-func getChildren(db *sql.DB, parentId int) []int {
-	items := []int{}
-	rows, err := db.Query("SELECT id FROM metadata_items WHERE parent_id=?", parentId)
-	if err != nil {
-		slog.Error(fmt.Sprintf("getChildren error getting children of %d: %s", parentId, err))
-		return items
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id int
-		rows.Scan(&id)
-		items = append(items, id)
-		children := getChildren(db, id)
-		items = append(items, children...)
-	}
-	return items
-}
-
 // getLibrarySectionIDs returns a list of library_section ids for the given library names
 func getLibrarySectionIDs(db *sql.DB, names []string) ([]int, error) {
 	if len(names) == 0 {
@@ -162,174 +143,115 @@ func getLibrarySectionIDs(db *sql.DB, names []string) ([]int, error) {
 	return ids, nil
 }
 
-// tag2items returns a list of media_items.id for a given tag, filtered by librarySectionIDs if not empty
-func tag2items(db *sql.DB, tag string, librarySectionIDs []int) []int {
-	items := []int{}
-	// get tag id from tags table
-	rows, err := db.Query("SELECT id FROM tags WHERE tag=?", tag)
+// plexLabelTagType is the tags.tag_type of Plex labels, the category that -tags
+// values name. Other categories (countries, genres, collections, ...) reuse the
+// same tag text, so the label lookup must be restricted to this type.
+const plexLabelTagType = 11
+
+// labelClosureCTE expands the labels given to -tags to the metadata_items they
+// tag plus every descendant of those items, so a tagged show or season also
+// selects its episodes.
+const labelClosureCTE = `
+WITH RECURSIVE tagged(id) AS (
+    SELECT tg.metadata_item_id
+      FROM taggings tg
+      JOIN tags t ON t.id = tg.tag_id
+     WHERE t.tag_type = ? AND t.tag IN (?%s)
+  UNION
+    SELECT child.id
+      FROM metadata_items child
+      JOIN tagged parent ON child.parent_id = parent.id
+)`
+
+// anyTagClosureCTE expands every tagging to the tagged metadata_items plus all
+// of their descendants.
+const anyTagClosureCTE = `
+WITH RECURSIVE tagged(id) AS (
+    SELECT metadata_item_id FROM taggings
+  UNION
+    SELECT child.id
+      FROM metadata_items child
+      JOIN tagged parent ON child.parent_id = parent.id
+)`
+
+// queryMediaPaths runs a query returning media_parts.file values and returns
+// them untrimmed, so that meaningful whitespace in a filename is preserved.
+func queryMediaPaths(db *sql.DB, query string, args []interface{}) ([]string, error) {
+	rows, err := db.Query(query, args...)
 	if err != nil {
-		slog.Error(fmt.Sprintf("tag2items error getting tag %s: %s", tag, err))
-		return items
+		return nil, err
 	}
 	defer rows.Close()
-	// get first row
-	var tagId int
-	_found := false
-	if rows.Next() {
-		err = rows.Scan(&tagId)
-		if err != nil {
-			slog.Error(fmt.Sprintf("tag2items error scanning tag %s: %s", tag, err))
-			return items
-		}
-		_found = true
-	}
-	if !_found {
-		slog.Debug(fmt.Sprintf("tag %s not found", tag))
-		return items
-	}
-	slog.Debug(fmt.Sprintf("tag %s id %d", tag, tagId))
-	// get metadata_item_id from taggings table
-	rows, err = db.Query("SELECT metadata_item_id FROM taggings WHERE tag_id=?", tagId)
-	if err != nil {
-		slog.Error(fmt.Sprintf("tag2items error getting taggings for tag %s: %s", tag, err))
-		return items
-	}
-
-	metadataItemIds := []int{}
-	for rows.Next() {
-		var metadataItemId int
-		err = rows.Scan(&metadataItemId)
-		if err != nil {
-			slog.Error(fmt.Sprintf("tag2items error scanning taggings for tag %s: %s", tag, err))
-			continue
-		}
-		metadataItemIds = append(metadataItemIds, metadataItemId)
-	}
-
-	// also add entries that came from rows that have a parent_id set to one of
-	// the values seen in taggings.
-	childrenMetadataItemIds := []int{}
-	for _, metadataItemId := range metadataItemIds {
-		childrenMetadataItemIds = append(childrenMetadataItemIds, getChildren(db, metadataItemId)...)
-	}
-	metadataItemIds = append(metadataItemIds, childrenMetadataItemIds...)
-
-	for _, metadataItemId := range metadataItemIds {
-		var miRows *sql.Rows
-		var err error
-		if len(librarySectionIDs) > 0 {
-			clause, args := librarySectionFilter("library_section_id", librarySectionIDs)
-			query := fmt.Sprintf("SELECT id FROM media_items WHERE metadata_item_id=? AND %s", clause)
-			args = append([]interface{}{metadataItemId}, args...)
-			miRows, err = db.Query(query, args...)
-		} else {
-			miRows, err = db.Query("SELECT id FROM media_items WHERE metadata_item_id=?", metadataItemId)
-		}
-		if err != nil {
-			slog.Error(fmt.Sprintf("tag2items error getting media_items.id for tag %s: %s", tag, err))
-			return items
-		}
-		for miRows.Next() {
-			var miRowID int
-			err = miRows.Scan(&miRowID)
-			if err != nil {
-				slog.Error(fmt.Sprintf("tag2items error scanning media_items.id for tag %s: %s", tag, err))
-				continue
-			}
-			items = append(items, miRowID)
-		}
-	}
-	slog.Debug(fmt.Sprintf("tag %s metadata items: %d", tag, len(items)))
-	return items
-}
-
-// media2parts returns a list of media_parts.file for a given media_item.id
-func media2parts(db *sql.DB, mediaId int) []string {
 	parts := []string{}
-	rows, err := db.Query("SELECT file FROM media_parts WHERE media_item_id=?", mediaId)
-	if err != nil {
-		slog.Error(fmt.Sprintf("media2parts error getting media_parts for media %d: %s", mediaId, err))
-		return parts
-	}
-	for rows.Next() {
-		var part string
-		err = rows.Scan(&part)
-		if err != nil {
-			slog.Error(fmt.Sprintf("media2parts error scanning media_parts for media %d: %s", mediaId, err))
-			continue
-		}
-		parts = append(parts, part)
-	}
-	slog.Debug(fmt.Sprintf("media %d parts: %s", mediaId, strings.Join(parts, ", ")))
-	return parts
-}
-
-// allMediaParts returns a list of all media_parts.file, filtered by librarySectionIDs if not empty
-func allMediaParts(cfg *config.Config, db *sql.DB, librarySectionIDs []int) []string {
-	parts := []string{}
-	var rows *sql.Rows
-	var err error
-	if len(librarySectionIDs) > 0 {
-		clause, args := librarySectionFilter("mi.library_section_id", librarySectionIDs)
-		query := fmt.Sprintf(`SELECT mp.file FROM media_parts mp JOIN media_items mi ON mp.media_item_id=mi.id WHERE %s`, clause)
-		rows, err = db.Query(query, args...)
-	} else {
-		rows, err = db.Query("SELECT file FROM media_parts")
-	}
-	if err != nil {
-		slog.Error(fmt.Sprintf("error querying media_parts: %s", err))
-		os.Exit(3)
-	}
-	defer rows.Close()
 	for rows.Next() {
 		var part string
 		if err := rows.Scan(&part); err != nil {
-			slog.Error(fmt.Sprintf("error scanning media_parts: %s", err))
-			continue
-		}
-		if cfg.StripPrefix != "" {
-			part = strings.TrimPrefix(part, cfg.StripPrefix)
-		}
-		if cfg.AddPrefix != "" {
-			part = path.Join(cfg.AddPrefix, part)
-		}
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
+			return nil, err
 		}
 		parts = append(parts, part)
 	}
-	slog.Debug(fmt.Sprintf("got a total of %d media parts", len(parts)))
-	return parts
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return parts, nil
 }
 
-// itemsNoTags returns a list of media_items.id with no associated tags, filtered by librarySectionIDs if not empty
-func itemsNoTags(db *sql.DB, librarySectionIDs []int) []int {
-	items := []int{}
-	var rows *sql.Rows
-	var err error
+// mediaPathConditions returns the WHERE conditions shared by every selection
+// mode: a nonblank media_parts.file, optionally restricted to libraries.
+func mediaPathConditions(librarySectionIDs []int) (string, []interface{}) {
+	where := "TRIM(mp.file) <> ''"
+	clause, args := librarySectionFilter("mi.library_section_id", librarySectionIDs)
+	if clause != "" {
+		where += " AND " + clause
+	}
+	return where, args
+}
+
+// taggedMediaParts returns the media parts of every media item whose metadata
+// is tagged with one of the labels, or descends from a metadata item that is.
+func taggedMediaParts(db *sql.DB, labels []string, librarySectionIDs []int) ([]string, error) {
+	if len(labels) == 0 {
+		return nil, nil
+	}
+	args := []interface{}{plexLabelTagType}
+	for _, label := range labels {
+		args = append(args, label)
+	}
+	where, libArgs := mediaPathConditions(librarySectionIDs)
+	args = append(args, libArgs...)
+	query := fmt.Sprintf(labelClosureCTE, strings.Repeat(",?", len(labels)-1)) + `
+SELECT mp.file
+  FROM tagged
+  JOIN media_items mi ON mi.metadata_item_id = tagged.id
+  JOIN media_parts mp ON mp.media_item_id = mi.id
+ WHERE ` + where
+	return queryMediaPaths(db, query, args)
+}
+
+// untaggedMediaParts returns the media parts of every media item whose metadata
+// carries no tag at all, neither directly nor through an ancestor. It uses the
+// same inherited closure as taggedMediaParts so the two modes partition the
+// library consistently.
+func untaggedMediaParts(db *sql.DB, librarySectionIDs []int) ([]string, error) {
+	where, args := mediaPathConditions(librarySectionIDs)
+	where += " AND NOT EXISTS (SELECT 1 FROM tagged WHERE tagged.id = mi.metadata_item_id)"
+	query := anyTagClosureCTE + `
+SELECT mp.file
+  FROM media_items mi
+  JOIN media_parts mp ON mp.media_item_id = mi.id
+ WHERE ` + where
+	return queryMediaPaths(db, query, args)
+}
+
+// allMediaParts returns every media part file, optionally restricted to
+// libraries. The join is only needed to apply the library filter.
+func allMediaParts(db *sql.DB, librarySectionIDs []int) ([]string, error) {
+	where, args := mediaPathConditions(librarySectionIDs)
+	from := "media_parts mp"
 	if len(librarySectionIDs) > 0 {
-		clause, args := librarySectionFilter("library_section_id", librarySectionIDs)
-		query := fmt.Sprintf("SELECT id FROM media_items WHERE metadata_item_id NOT IN (SELECT metadata_item_id FROM taggings) AND %s", clause)
-		rows, err = db.Query(query, args...)
-	} else {
-		rows, err = db.Query("SELECT id FROM media_items WHERE metadata_item_id NOT IN (SELECT metadata_item_id FROM taggings)")
+		from = "media_parts mp JOIN media_items mi ON mp.media_item_id = mi.id"
 	}
-	if err != nil {
-		slog.Error(fmt.Sprintf("itemsNoTags error querying media_items: %s", err))
-		return items
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id int
-		if err := rows.Scan(&id); err != nil {
-			slog.Error(fmt.Sprintf("itemsNoTags error scanning media_items.id: %s", err))
-			continue
-		}
-		items = append(items, id)
-	}
-	slog.Debug(fmt.Sprintf("items with no tags: %d", len(items)))
-	return items
+	return queryMediaPaths(db, "SELECT mp.file FROM "+from+" WHERE "+where, args)
 }
 
 // deduplicate a list of strings
@@ -382,22 +304,17 @@ func main() {
 	}
 
 	parts := []string{}
-	if cfg.ListAll {
-		parts = allMediaParts(cfg, db, librarySectionIDs)
-	} else if cfg.NoTags {
-		items := itemsNoTags(db, librarySectionIDs)
-		for _, item := range items {
-			mediaParts := media2parts(db, item)
-			parts = append(parts, mediaParts...)
-		}
-	} else {
-		for _, tag := range cfg.Tags {
-			items := tag2items(db, tag, librarySectionIDs)
-			for _, item := range items {
-				mediaParts := media2parts(db, item)
-				parts = append(parts, mediaParts...)
-			}
-		}
+	switch {
+	case cfg.ListAll:
+		parts, err = allMediaParts(db, librarySectionIDs)
+	case cfg.NoTags:
+		parts, err = untaggedMediaParts(db, librarySectionIDs)
+	default:
+		parts, err = taggedMediaParts(db, cfg.Tags, librarySectionIDs)
+	}
+	if err != nil {
+		slog.Error(fmt.Sprintf("error selecting media parts: %s", err))
+		os.Exit(1)
 	}
 
 	parts = dedupStrings(parts)
