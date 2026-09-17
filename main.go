@@ -4,6 +4,7 @@ package main
 import (
 	"database/sql"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/alberanid/medialocator/config"
+	"github.com/alberanid/medialocator/version"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -287,43 +289,55 @@ func dedupStrings(s []string) []string {
 	return result
 }
 
-func main() {
-	cfg := config.ParseArgs()
+// errOutput marks failures that produce the output stream or file; main exits
+// with status 2 for them and with status 1 for database or configuration
+// failures.
+var errOutput = errors.New("output error")
 
-	if _, err := os.Stat(cfg.PlexDb); os.IsNotExist(err) {
-		slog.Error(fmt.Sprintf("database %s does not exist", cfg.PlexDb))
-		os.Exit(1)
+// run executes a single medialocator invocation, writing the media list to
+// stdout or to -output-file and returning any failure instead of terminating
+// the process.
+func run(args []string, stdout, stderr io.Writer) error {
+	cfg, err := config.Parse(args, stderr)
+	if err != nil {
+		return err
+	}
+	if cfg.ShowVersion {
+		fmt.Fprintf(stdout, "version %s\n", version.VERSION)
+		return nil
+	}
+	if cfg.Verbose {
+		slog.SetLogLoggerLevel(slog.LevelDebug)
+	}
+
+	if _, err := os.Stat(cfg.PlexDb); err != nil {
+		return fmt.Errorf("cannot use database %s: %s", cfg.PlexDb, err)
 	}
 
 	if cfg.OutputFile != "" {
 		if err := ensureDistinctOutput(cfg.PlexDb, cfg.OutputFile); err != nil {
-			slog.Error(fmt.Sprintf("refusing output file %s: %s", cfg.OutputFile, err))
-			os.Exit(2)
+			return fmt.Errorf("%w: refusing output file %s: %s", errOutput, cfg.OutputFile, err)
 		}
 	}
 
 	db, err := sql.Open("sqlite3", readOnlyDSN(cfg.PlexDb))
 	if err != nil {
-		slog.Error(fmt.Sprintf("error opening database %s: %s", cfg.PlexDb, err))
-		os.Exit(1)
+		return fmt.Errorf("error opening database %s: %s", cfg.PlexDb, err)
 	}
 	defer db.Close()
 
 	if err := validateDatabase(db); err != nil {
-		slog.Error(fmt.Sprintf("error reading database %s: %s", cfg.PlexDb, err))
-		os.Exit(1)
+		return fmt.Errorf("error reading database %s: %s", cfg.PlexDb, err)
 	}
 
 	librarySectionIDs := []int{}
 	if len(cfg.Libraries) > 0 {
 		ids, err := getLibrarySectionIDs(db, cfg.Libraries)
 		if err != nil {
-			slog.Error(fmt.Sprintf("error getting library section ids: %s", err))
-			os.Exit(1)
+			return fmt.Errorf("error getting library section ids: %s", err)
 		}
 		if len(ids) == 0 {
-			slog.Error("no matching libraries found for -libraries argument")
-			os.Exit(1)
+			return errors.New("no matching libraries found for -libraries argument")
 		}
 		librarySectionIDs = ids
 	}
@@ -338,9 +352,9 @@ func main() {
 		parts, err = taggedMediaParts(db, cfg.Tags, librarySectionIDs)
 	}
 	if err != nil {
-		slog.Error(fmt.Sprintf("error selecting media parts: %s", err))
-		os.Exit(1)
+		return fmt.Errorf("error selecting media parts: %s", err)
 	}
+	slog.Debug(fmt.Sprintf("selected %d media parts", len(parts)))
 
 	parts = dedupStrings(parts)
 	for idx, part := range parts {
@@ -354,15 +368,26 @@ func main() {
 	}
 
 	if cfg.OutputFile == "" {
-		if err := writeLines(os.Stdout, parts); err != nil {
-			slog.Error(fmt.Sprintf("error writing to standard output: %s", err))
-			os.Exit(2)
+		if err := writeLines(stdout, parts); err != nil {
+			return fmt.Errorf("%w: error writing to standard output: %s", errOutput, err)
 		}
-		return
+		return nil
 	}
 
 	if err := writeOutputAtomically(cfg.OutputFile, parts); err != nil {
-		slog.Error(fmt.Sprintf("error writing output file %s: %s", cfg.OutputFile, err))
+		return fmt.Errorf("%w: error writing output file %s: %s", errOutput, cfg.OutputFile, err)
+	}
+	return nil
+}
+
+func main() {
+	switch err := run(os.Args[1:], os.Stdout, os.Stderr); {
+	case err == nil, errors.Is(err, flag.ErrHelp):
+	case errors.Is(err, errOutput):
+		slog.Error(err.Error())
 		os.Exit(2)
+	default:
+		slog.Error(err.Error())
+		os.Exit(1)
 	}
 }
