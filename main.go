@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/url"
 	"os"
@@ -53,6 +54,23 @@ func ensureDistinctOutput(dbPath, outputPath string) error {
 	return nil
 }
 
+// validateDatabase forces a first read of the database so that a missing,
+// unreadable or non-SQLite file is reported before any selection work begins.
+func validateDatabase(db *sql.DB) error {
+	var schemaVersion int
+	return db.QueryRow("PRAGMA schema_version").Scan(&schemaVersion)
+}
+
+// writeLines writes one path per line and reports the first write failure.
+func writeLines(w io.Writer, parts []string) error {
+	for _, part := range parts {
+		if _, err := fmt.Fprintf(w, "%s\n", part); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // writeOutputAtomically writes the lines to a temporary file in the
 // destination directory and renames it over outputPath, so an interrupted or
 // failing run leaves any pre-existing output file untouched.
@@ -73,11 +91,9 @@ func writeOutputAtomically(outputPath string, parts []string) error {
 	if info, err := os.Stat(outputPath); err == nil {
 		mode = info.Mode().Perm()
 	}
-	for _, part := range parts {
-		if _, err := fmt.Fprintf(tmp, "%s\n", part); err != nil {
-			tmp.Close()
-			return err
-		}
+	if err := writeLines(tmp, parts); err != nil {
+		tmp.Close()
+		return err
 	}
 	if err := tmp.Close(); err != nil {
 		return err
@@ -136,9 +152,12 @@ func getLibrarySectionIDs(db *sql.DB, names []string) ([]int, error) {
 	for rows.Next() {
 		var id int
 		if err := rows.Scan(&id); err != nil {
-			continue
+			return nil, err
 		}
 		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return ids, nil
 }
@@ -286,8 +305,14 @@ func main() {
 	db, err := sql.Open("sqlite3", readOnlyDSN(cfg.PlexDb))
 	if err != nil {
 		slog.Error(fmt.Sprintf("error opening database %s: %s", cfg.PlexDb, err))
+		os.Exit(1)
 	}
 	defer db.Close()
+
+	if err := validateDatabase(db); err != nil {
+		slog.Error(fmt.Sprintf("error reading database %s: %s", cfg.PlexDb, err))
+		os.Exit(1)
+	}
 
 	librarySectionIDs := []int{}
 	if len(cfg.Libraries) > 0 {
@@ -329,8 +354,9 @@ func main() {
 	}
 
 	if cfg.OutputFile == "" {
-		for _, part := range parts {
-			fmt.Fprintf(os.Stdout, "%s\n", part)
+		if err := writeLines(os.Stdout, parts); err != nil {
+			slog.Error(fmt.Sprintf("error writing to standard output: %s", err))
+			os.Exit(2)
 		}
 		return
 	}
